@@ -19,9 +19,16 @@ import joblib
 st.title("🔬 Cervical Cancer Prediction System")
 
 def load_pipeline():
-    model = joblib.load("outputs/final_pipeline.pkl")
-    return model
+    try:
+        base_dir = os.path.dirname(os.path.dirname(__file__))  # go to root
+        model_path = os.path.join(base_dir, "outputs", "final_pipeline.pkl")
 
+        model = joblib.load(model_path)
+        return model
+
+    except Exception as e:
+        print("ERROR:", e)
+        return None
 pipeline = load_pipeline() 
 
 try:
@@ -113,7 +120,7 @@ hr { border-color:#1e2530 !important; }
 # ═══════════════════════════════════════════════════════════════════
 #  PATHS
 # ═══════════════════════════════════════════════════════════════════
-BASE    = os.path.dirname(os.path.abspath(__file__))
+BASE    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUTS = os.path.join(BASE, "outputs")
 DATA_P  = os.path.join(BASE, "data", "risk_factors_cervical_cancer.csv")
 def op(f): return os.path.join(OUTPUTS, f)
