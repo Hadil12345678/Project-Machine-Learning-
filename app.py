@@ -918,3 +918,4 @@ st.markdown("""
     <a href='https://archive.ics.uci.edu/dataset/383' style='color:#30363d'>UCI ML Repository</a>
     · Academic use only
 </p>""", unsafe_allow_html=True)
+# Streamlit ML App - improved version
