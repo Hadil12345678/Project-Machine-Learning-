@@ -90,3 +90,6 @@ def my_predictions(
     return db.query(models.Prediction).filter(
         models.Prediction.user_id == current_user.id
     ).all()
+    print("Loading model...")
+    model = joblib.load(model_path)
+print("Model loaded successfully!")
