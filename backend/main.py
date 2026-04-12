@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from backend.database import get_db, engine
 from backend import models, schemas, auth, ml_service
-
+# FastAPI backend for ML cervical cancer prediction system
 # ✅ CREATE TABLES (you forgot this line position)
 models.Base.metadata.create_all(bind=engine)
 
