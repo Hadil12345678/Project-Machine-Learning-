@@ -1,0 +1,22 @@
+services:
+  # ── Service 1 : FastAPI backend ─────────────────────────────────
+  - type: web
+    name: cervical-cancer-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+
+  # ── Service 2 : Streamlit frontend ──────────────────────────────
+  - type: web
+    name: cervical-cancer-app
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+      - key: FASTAPI_URL
+        value: https://cervical-cancer-api.onrender.com
