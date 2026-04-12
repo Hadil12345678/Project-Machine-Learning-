@@ -1,4 +1,4 @@
-fastapi
+﻿fastapi
 uvicorn
 streamlit
 pandas
@@ -15,4 +15,5 @@ python-dotenv
 sqlalchemy
 python-jose
 bcrypt
+passlib
 python-multipart
