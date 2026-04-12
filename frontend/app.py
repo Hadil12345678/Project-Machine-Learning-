@@ -11,25 +11,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
 import os
+from pathlib import Path
 import warnings
 warnings.filterwarnings("ignore")
 import shap 
-import joblib
 
 st.title("🔬 Cervical Cancer Prediction System")
-
-def load_pipeline():
-    try:
-        base_dir = os.path.dirname(os.path.dirname(__file__))  # go to root
-        model_path = os.path.join(base_dir, "outputs", "final_pipeline.pkl")
-
-        model = joblib.load(model_path)
-        return model
-
-    except Exception as e:
-        print("ERROR:", e)
-        return None
-pipeline = load_pipeline() 
 
 try:
     from PIL import Image
@@ -120,10 +107,10 @@ hr { border-color:#1e2530 !important; }
 # ═══════════════════════════════════════════════════════════════════
 #  PATHS
 # ═══════════════════════════════════════════════════════════════════
-BASE    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTPUTS = os.path.join(BASE, "outputs")
-DATA_P  = os.path.join(BASE, "data", "risk_factors_cervical_cancer.csv")
-def op(f): return os.path.join(OUTPUTS, f)
+BASE    = Path(__file__).resolve().parents[1]
+OUTPUTS = BASE / "outputs"
+DATA_P  = BASE / "data" / "risk_factors_cervical_cancer.csv"
+def op(f): return OUTPUTS / f
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOAD RESOURCES
@@ -132,20 +119,29 @@ def op(f): return os.path.join(OUTPUTS, f)
 def load_pipeline():
     """Load the FULL sklearn pipeline (imputer + scaler + model)."""
     path = op("final_pipeline.pkl")
-    if os.path.exists(path):
+    if path.exists():
         return joblib.load(path)
+
+    alt_path = BASE / "frontend" / "outputs" / "final_pipeline.pkl"
+    if alt_path.exists():
+        return joblib.load(alt_path)
+
+    cwd_path = Path.cwd() / "outputs" / "final_pipeline.pkl"
+    if cwd_path.exists():
+        return joblib.load(cwd_path)
+
     return None
 
 @st.cache_data(show_spinner=False)
 def load_test_data():
     xp, yp = op("X_test.csv"), op("y_test.csv")
-    if os.path.exists(xp) and os.path.exists(yp):
+    if xp.exists() and yp.exists():
         return pd.read_csv(xp), pd.read_csv(yp).squeeze()
     return None, None
 
 @st.cache_data(show_spinner=False)
 def load_raw():
-    if os.path.exists(DATA_P):
+    if DATA_P.exists():
         return pd.read_csv(DATA_P, na_values="?")
     return None
 
