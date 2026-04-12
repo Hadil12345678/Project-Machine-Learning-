@@ -15,6 +15,9 @@ import warnings
 warnings.filterwarnings("ignore")
 import shap 
 import joblib
+
+st.title("🔬 Cervical Cancer Prediction System")
+
 def load_pipeline():
     model = joblib.load("outputs/final_pipeline.pkl")
     return model
