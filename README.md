@@ -7,6 +7,7 @@
 ## 📁 Structure du projet
 
 ```
+## 🔧 Version
 cervical_cancer_ML/
 │
 ├── data/
