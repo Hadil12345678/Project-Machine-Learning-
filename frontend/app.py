@@ -1,9 +1,3 @@
-"""
-╔══════════════════════════════════════════════════════════════════╗
-║  Cervical Cancer Risk Predictor — Dashboard Streamlit v3         ║
-║  Hadil Dhaya · 4th Year Data Science · Group 5 · 2026           ║
-╚══════════════════════════════════════════════════════════════════╝
-"""
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,12 +5,18 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
 import os
+import json
+import importlib
 from pathlib import Path
 import warnings
-warnings.filterwarnings("ignore")
-import shap 
 
-st.title("🔬 Cervical Cancer Prediction System")
+warnings.filterwarnings("ignore")
+
+try:
+    import shap
+    SHAP_OK = True
+except Exception:
+    SHAP_OK = False
 
 try:
     from PIL import Image
@@ -33,6 +33,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+st.title("🔬 Cervical Cancer Prediction System")
+
 # ═══════════════════════════════════════════════════════════════════
 #  CSS
 # ═══════════════════════════════════════════════════════════════════
@@ -107,30 +110,53 @@ hr { border-color:#1e2530 !important; }
 # ═══════════════════════════════════════════════════════════════════
 #  PATHS
 # ═══════════════════════════════════════════════════════════════════
-BASE    = Path(__file__).resolve().parents[1]
+BASE = Path(__file__).resolve().parents[1]
 OUTPUTS = BASE / "outputs"
-DATA_P  = BASE / "data" / "risk_factors_cervical_cancer.csv"
-def op(f): return OUTPUTS / f
+
+DATA_CANDIDATES = [
+    BASE / "data" / "Mydata.csv",
+    BASE / "data" / "Mydata.scv",
+    BASE / "data" / "risk_factors_cervical_cancer.csv",
+]
+
+def op(f):
+    return OUTPUTS / f
+
+def find_data_path():
+    for path in DATA_CANDIDATES:
+        if path.exists():
+            return path
+    return None
+
+DATA_P = find_data_path()
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOAD RESOURCES
 # ═══════════════════════════════════════════════════════════════════
 @st.cache_resource(show_spinner=False)
 def load_pipeline():
-    """Load the FULL sklearn pipeline (imputer + scaler + model)."""
-    path = op("final_pipeline.pkl")
-    if path.exists():
-        return joblib.load(path)
-
-    alt_path = BASE / "frontend" / "outputs" / "final_pipeline.pkl"
-    if alt_path.exists():
-        return joblib.load(alt_path)
-
-    cwd_path = Path.cwd() / "outputs" / "final_pipeline.pkl"
-    if cwd_path.exists():
-        return joblib.load(cwd_path)
-
+    paths = [
+        op("final_pipeline.pkl"),
+        BASE / "frontend" / "outputs" / "final_pipeline.pkl",
+        Path.cwd() / "outputs" / "final_pipeline.pkl",
+    ]
+    for path in paths:
+        if path.exists():
+            return joblib.load(path)
     return None
+
+@st.cache_data(show_spinner=False)
+def load_metadata():
+    paths = [
+        op("final_metadata.json"),
+        BASE / "frontend" / "outputs" / "final_metadata.json",
+        Path.cwd() / "outputs" / "final_metadata.json",
+    ]
+    for path in paths:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    return {}
 
 @st.cache_data(show_spinner=False)
 def load_test_data():
@@ -141,159 +167,151 @@ def load_test_data():
 
 @st.cache_data(show_spinner=False)
 def load_raw():
-    if DATA_P.exists():
+    if DATA_P is not None and DATA_P.exists():
         return pd.read_csv(DATA_P, na_values="?")
     return None
 
-
 @st.cache_data(show_spinner=False)
 def load_raw_feature_medians():
-    """
-    Column medians on the original UCI CSV (raw scale).
-    outputs/X_test.csv is often StandardScaler output (z-scores) — do NOT use it as a baseline
-    for sliders that collect raw ages/counts; mixing z-scores + raw values breaks predict_proba.
-    """
+    metadata = load_metadata()
+    raw_feature_medians = metadata.get("raw_feature_medians", None)
+    if raw_feature_medians:
+        return pd.Series(raw_feature_medians, dtype=float)
+
     df = load_raw()
     if df is None:
         return None
+
     X = df.drop(columns=["Biopsy"], errors="ignore")
     return X.median(numeric_only=True)
 
 @st.cache_data(show_spinner=False)
 def load_model_name():
+    metadata = load_metadata()
+    if metadata.get("model_name"):
+        return metadata["model_name"]
+
     p = op("best_model_name.pkl")
-    return joblib.load(p) if os.path.exists(p) else "Pipeline"
+    if p.exists():
+        return joblib.load(p)
+    return "Pipeline"
 
 def load_img(fname):
     p = op(fname)
-    if os.path.exists(p) and PIL_OK:
+    if p.exists() and PIL_OK:
         return Image.open(p)
     return None
 
-pipeline   = load_pipeline()
+pipeline = load_pipeline()
+metadata = load_metadata()
 X_test, y_test = load_test_data()
-df_raw     = load_raw()
+df_raw = load_raw()
 model_name = load_model_name()
 
-# ─── Get the exact feature names the pipeline was trained on ───────
-# This is the GROUND TRUTH — everything must match this list exactly
-PIPELINE_FEATURES = None
-if pipeline is not None and hasattr(pipeline, "feature_names_in_"):
-    PIPELINE_FEATURES = list(pipeline.feature_names_in_)
-elif X_test is not None:
-    PIPELINE_FEATURES = list(X_test.columns)
+FINAL_FEATURES = metadata.get("final_raw_features", None)
+
+if FINAL_FEATURES is None:
+    if pipeline is not None and hasattr(pipeline, "feature_names_in_"):
+        FINAL_FEATURES = list(pipeline.feature_names_in_)
+    elif X_test is not None:
+        FINAL_FEATURES = list(X_test.columns)
+    else:
+        FINAL_FEATURES = []
+
+THRESHOLD = float(metadata.get("threshold", 0.5))
+REMOVED_LEAKY_FEATURES = set(metadata.get("removed_leaky_features", []))
 
 # ═══════════════════════════════════════════════════════════════════
-#  METRICS (computed against the pipeline directly)
+#  METRICS
 # ═══════════════════════════════════════════════════════════════════
 @st.cache_data(show_spinner=False)
-def compute_metrics(_pipeline, _X_test, _y_test):
+def compute_metrics(_pipeline, _X_test, _y_test, threshold):
     if _pipeline is None or _X_test is None or _y_test is None:
         return None
+
     try:
         from sklearn.metrics import (
             roc_auc_score, f1_score, recall_score, precision_score,
             accuracy_score, confusion_matrix, roc_curve,
             precision_recall_curve, average_precision_score,
+            balanced_accuracy_score,
         )
-        # Align columns to what the pipeline was fit on (CSV may differ from training)
+
         expected = getattr(_pipeline, "feature_names_in_", None)
         if expected is not None:
             _X_test = _X_test.reindex(columns=list(expected), fill_value=0)
-        # Pipeline takes RAW X_test (imputer + scaler + model inside)
-        y_pred = _pipeline.predict(_X_test)
+
         y_prob = _pipeline.predict_proba(_X_test)[:, 1]
+        y_pred = (y_prob >= threshold).astype(int)
+
         fpr, tpr, _ = roc_curve(_y_test, y_prob)
         prec, rec, _ = precision_recall_curve(_y_test, y_prob)
         cm = confusion_matrix(_y_test, y_pred)
         tn, fp, fn, tp = cm.ravel()
+
         return {
             "auc": roc_auc_score(_y_test, y_prob),
             "f1": f1_score(_y_test, y_pred, zero_division=0),
             "recall": recall_score(_y_test, y_pred, zero_division=0),
             "precision": precision_score(_y_test, y_pred, zero_division=0),
             "accuracy": accuracy_score(_y_test, y_pred),
-            "cm": cm, "tn": tn, "fp": fp, "fn": fn, "tp": tp,
-            "fpr": fpr, "tpr": tpr,
-            "prec_curve": prec, "rec_curve": rec,
+            "balanced_accuracy": balanced_accuracy_score(_y_test, y_pred),
+            "cm": cm,
+            "tn": tn,
+            "fp": fp,
+            "fn": fn,
+            "tp": tp,
+            "fpr": fpr,
+            "tpr": tpr,
+            "prec_curve": prec,
+            "rec_curve": rec,
             "ap": average_precision_score(_y_test, y_prob),
-            "y_pred": y_pred, "y_prob": y_prob, "y_test": _y_test,
+            "y_pred": y_pred,
+            "y_prob": y_prob,
+            "y_test": _y_test,
         }
     except Exception as e:
         st.warning(f"Could not compute metrics: {e}")
         return None
 
-metrics = compute_metrics(pipeline, X_test, y_test)
+metrics = compute_metrics(pipeline, X_test, y_test, THRESHOLD)
 
 # ═══════════════════════════════════════════════════════════════════
-#  PREDICTION — uses final_pipeline.pkl with CORRECT feature names
+#  PREDICTION
 # ═══════════════════════════════════════════════════════════════════
 def build_input_df(patient: dict) -> pd.DataFrame:
-    """
-    Build a DataFrame with exactly the columns the pipeline was trained on.
-
-    Strategy:
-      1. Baseline = medians from the **raw** UCI CSV (same scale as training before the pipeline).
-         Never use X_test.csv medians here if that file is z-scored (common after notebook export).
-      2. Overwrite columns collected in the UI (raw ages, counts, 0/1 flags).
-      3. Engineered columns only if present in PIPELINE_FEATURES.
-    """
-    if PIPELINE_FEATURES is None:
-        raise RuntimeError("Cannot determine pipeline features. Check outputs/final_pipeline.pkl")
+    if not FINAL_FEATURES:
+        raise RuntimeError("Cannot determine final feature list. Run final notebook first.")
 
     raw_med = load_raw_feature_medians()
     if raw_med is not None:
-        baseline = raw_med.reindex(PIPELINE_FEATURES).fillna(0.0)
+        baseline = raw_med.reindex(FINAL_FEATURES).fillna(0.0)
     else:
-        baseline = pd.Series(0.0, index=PIPELINE_FEATURES)
+        baseline = pd.Series(0.0, index=FINAL_FEATURES)
 
-    row = {col: float(baseline[col]) for col in PIPELINE_FEATURES}
-
-    # ── Step 2: map UI inputs → exact column names ───────────────────
-    # These names must match what the model saw during fit EXACTLY
-    t_first = (
-        float(baseline["STDs: Time since first diagnosis"])
-        if "STDs: Time since first diagnosis" in baseline.index
-        else 0.0
-    )
-    t_last = (
-        float(baseline["STDs: Time since last diagnosis"])
-        if "STDs: Time since last diagnosis" in baseline.index
-        else 0.0
-    )
+    row = {col: float(baseline[col]) for col in FINAL_FEATURES}
 
     ui_map = {
-        "Age":                              float(patient.get("age", 25)),
-        "Number of sexual partners":        float(patient.get("partners", 2)),
-        "First sexual intercourse":         float(patient.get("first_sex", 18)),
-        "Num of pregnancies":               float(patient.get("pregnancies", 0)),
-        "Smokes":                           float(patient.get("smokes", 0)),
-        "Smokes (years)":                   float(patient.get("smk_years", 0)),
-        "Smokes (packs/year)":              float(patient.get("smk_packs", 0)),
-        "Hormonal Contraceptives":          float(patient.get("hormonal", 0)),
-        "Hormonal Contraceptives (years)":  float(patient.get("horm_years", 0)),
-        "IUD":                              float(patient.get("iud", 0)),
-        "IUD (years)":                      float(patient.get("iud_years", 0)),
-        "STDs":                             float(patient.get("stds", 0)),
-        "STDs (number)":                    float(patient.get("stds_num", 0)),
-        "STDs: Number of diagnosis":        float(patient.get("stds_num", 0)),
-        "Hinselmann":                       float(patient.get("hinselmann", 0)),
-        "Schiller":                         float(patient.get("schiller", 0)),
-        "Citology":                         float(patient.get("citology", 0)),
-        "Dx:Cancer":                        float(patient.get("dx_cancer", 0)),
-        "Dx:CIN":                           float(patient.get("dx_cin", 0)),
-        "Dx:HPV":                           float(patient.get("dx_hpv", 0)),
-        "Dx":                               float(patient.get("dx_any", 0)),
-        "STDs: Time since first diagnosis": 0.0 if patient.get("stds", 0) == 0 else t_first,
-        "STDs: Time since last diagnosis":  0.0 if patient.get("stds", 0) == 0 else t_last,
+        "Age": float(patient.get("age", 25)),
+        "Number of sexual partners": float(patient.get("partners", 2)),
+        "First sexual intercourse": float(patient.get("first_sex", 18)),
+        "Num of pregnancies": float(patient.get("pregnancies", 0)),
+        "Smokes": float(patient.get("smokes", 0)),
+        "Smokes (years)": float(patient.get("smk_years", 0)),
+        "Smokes (packs/year)": float(patient.get("smk_packs", 0)),
+        "Hormonal Contraceptives": float(patient.get("hormonal", 0)),
+        "Hormonal Contraceptives (years)": float(patient.get("horm_years", 0)),
+        "IUD": float(patient.get("iud", 0)),
+        "IUD (years)": float(patient.get("iud_years", 0)),
+        "STDs": float(patient.get("stds", 0)),
+        "STDs (number)": float(patient.get("stds_num", 0)),
     }
-
+    
     for col, val in ui_map.items():
         if col in row:
             row[col] = val
 
-    # ── Step 3: engineered features — ONLY if the pipeline uses them ─
-    a  = float(patient.get("age", 25))
+    a = float(patient.get("age", 25))
     fs = float(patient.get("first_sex", 18))
     sm = float(patient.get("smokes", 0))
     sy = float(patient.get("smk_years", 0))
@@ -302,53 +320,65 @@ def build_input_df(patient: dict) -> pd.DataFrame:
 
     if "age_first_sex_gap" in row:
         row["age_first_sex_gap"] = a - fs
+
     if "smoke_exposure" in row:
         row["smoke_exposure"] = sm * sy * max(sp, 1.0)
+
     if "stds_score" in row:
         row["stds_score"] = sn
 
-    # ── Step 4: return DataFrame with columns in the EXACT trained order
-    return pd.DataFrame([row], columns=PIPELINE_FEATURES)
+    return pd.DataFrame([row], columns=FINAL_FEATURES)
 
-
-def run_prediction(patient: dict) -> dict | None:
+def run_prediction(patient: dict):
     if pipeline is None:
         st.error("Pipeline not loaded. Check outputs/final_pipeline.pkl")
         return None
+
     try:
         df = build_input_df(patient)
-        # Pipeline handles imputation + scaling internally
         prob = float(pipeline.predict_proba(df)[0][1])
+        pred = int(prob >= THRESHOLD)
+
         return {
             "probability": prob,
-            "risk_level":  "HIGH" if prob >= 0.5 else "LOW",
-            "source":      "final_pipeline.pkl",
+            "risk_level": "HIGH" if pred == 1 else "LOW",
+            "source": "final_pipeline.pkl",
+            "threshold": THRESHOLD,
         }
     except Exception as e:
         st.error(f"Prediction error: {e}")
-        import traceback; st.code(traceback.format_exc())
+        import traceback
+        st.code(traceback.format_exc())
         return None
+
 def compute_shap_values(input_df):
-    import shap
+    if not SHAP_OK or pipeline is None:
+        return None, None
 
     try:
-        if pipeline is None:
-            return None, None
-        # Last step is the classifier / regressor (names vary across notebooks)
         model = pipeline.named_steps.get("model")
         if model is None:
             model = pipeline.steps[-1][1]
 
-        X_transformed = pipeline[:-1].transform(input_df)
+        if len(pipeline.steps) > 1:
+            preprocessor = pipeline[:-1]
+            X_transformed = preprocessor.transform(input_df)
 
-        try:
-            explainer = shap.TreeExplainer(model)
-        except Exception:
-            explainer = shap.Explainer(model, X_transformed)
+            try:
+                feature_names = preprocessor.get_feature_names_out()
+            except Exception:
+                feature_names = np.array(input_df.columns)
 
-        shap_values = explainer(X_transformed)
+            try:
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer(X_transformed)
+            except Exception:
+                explainer = shap.Explainer(model, X_transformed)
+                shap_values = explainer(X_transformed)
 
-        return shap_values, input_df.columns
+            return shap_values, feature_names
+
+        return None, None
 
     except Exception as e:
         st.warning(f"SHAP error: {e}")
@@ -369,63 +399,74 @@ with st.sidebar:
     st.markdown("## 🔬 Patient data")
     st.markdown("---")
 
-    age         = st.slider("Age", 13, 84, 25)
-    partners    = st.slider("Sexual partners", 0, 28, 2)
-    first_sex   = st.slider("Age first intercourse", 10, 32, 18)
+    age = st.slider("Age", 13, 84, 25)
+    partners = st.slider("Sexual partners", 0, 28, 2)
+    first_sex = st.slider("Age first intercourse", 10, 32, 18)
     pregnancies = st.slider("Pregnancies", 0, 11, 0)
 
     st.markdown("**Smoking**")
-    smokes    = st.radio("Smokes?", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
+    smokes = st.radio("Smokes?", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
     smk_years = st.slider("Smoking years", 0.0, 37.0, 0.0, 0.5) if smokes else 0.0
-    smk_packs = st.slider("Packs/year",    0.0, 20.0, 0.0, 0.5) if smokes else 0.0
+    smk_packs = st.slider("Packs/year", 0.0, 20.0, 0.0, 0.5) if smokes else 0.0
 
     st.markdown("**Contraception**")
-    hormonal   = st.radio("Hormonal contraceptives", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
+    hormonal = st.radio("Hormonal contraceptives", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
     horm_years = st.slider("Contraceptive years", 0.0, 30.0, 0.0, 0.5) if hormonal else 0.0
-    iud        = st.radio("IUD", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
-    iud_years  = st.slider("IUD years", 0.0, 20.0, 0.0, 0.5) if iud else 0.0
+    iud = st.radio("IUD", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
+    iud_years = st.slider("IUD years", 0.0, 20.0, 0.0, 0.5) if iud else 0.0
 
     st.markdown("**STDs**")
-    stds     = st.radio("STDs diagnosed", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
+    stds = st.radio("STDs diagnosed", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True)
     stds_num = st.slider("Number of STDs", 0, 8, 0) if stds else 0
 
     st.markdown("**Screening / prior diagnosis**")
-    st.caption("These drive the model strongly — set if applicable.")
+    st.caption("Kept for UI compatibility. Corrected final model ignores them unless explicitly present in saved pipeline.")
+
     hinselmann = schiller = citology = 0
     dx_cancer = dx_cin = dx_hpv = dx_any = 0
     with st.expander("Clinical tests & Dx (0/1)", expanded=False):
         hinselmann = st.radio("Hinselmann", [0, 1], format_func=lambda x: "Pos" if x else "Neg", horizontal=True, key="hin")
-        schiller   = st.radio("Schiller", [0, 1], format_func=lambda x: "Pos" if x else "Neg", horizontal=True, key="sch")
-        citology   = st.radio("Citology", [0, 1], format_func=lambda x: "Abn" if x else "Norm", horizontal=True, key="cit")
-        dx_cancer  = st.radio("Dx: Cancer", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxc")
-        dx_cin     = st.radio("Dx: CIN", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxci")
-        dx_hpv     = st.radio("Dx: HPV", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxhp")
-        dx_any     = st.radio("Dx (any)", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxa")
+        schiller = st.radio("Schiller", [0, 1], format_func=lambda x: "Pos" if x else "Neg", horizontal=True, key="sch")
+        citology = st.radio("Citology", [0, 1], format_func=lambda x: "Abn" if x else "Norm", horizontal=True, key="cit")
+        dx_cancer = st.radio("Dx: Cancer", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxc")
+        dx_cin = st.radio("Dx: CIN", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxci")
+        dx_hpv = st.radio("Dx: HPV", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxhp")
+        dx_any = st.radio("Dx (any)", [0, 1], format_func=lambda x: "Yes" if x else "No", horizontal=True, key="dxa")
 
     st.markdown("---")
-    predict_btn = st.button("🧬 Analyse risk", width="stretch", type="primary")
+    predict_btn = st.button("🧬 Analyse risk", width='stretch', type="primary")
 
     st.markdown("""
     <div class='box-warn' style='font-size:0.75rem'>
         Academic use only. Not medical advice.
     </div>""", unsafe_allow_html=True)
 
-    # Debug: show which features the pipeline uses
-    if PIPELINE_FEATURES:
-        with st.expander("🔍 Debug — pipeline features"):
-            st.write(f"**{len(PIPELINE_FEATURES)} features:**")
-            st.write(PIPELINE_FEATURES)
+    if FINAL_FEATURES:
+        with st.expander("🔍 Debug — final features"):
+            st.write(f"**{len(FINAL_FEATURES)} features:**")
+            st.write(FINAL_FEATURES)
 
-# ─── Patient dict ──────────────────────────────────────────────────
 patient_dict = {
-    "age": age, "partners": partners, "first_sex": first_sex,
-    "pregnancies": pregnancies, "smokes": smokes,
-    "smk_years": smk_years, "smk_packs": smk_packs,
-    "hormonal": hormonal, "horm_years": horm_years,
-    "iud": iud, "iud_years": iud_years,
-    "stds": stds, "stds_num": stds_num,
-    "hinselmann": hinselmann, "schiller": schiller, "citology": citology,
-    "dx_cancer": dx_cancer, "dx_cin": dx_cin, "dx_hpv": dx_hpv, "dx_any": dx_any,
+    "age": age,
+    "partners": partners,
+    "first_sex": first_sex,
+    "pregnancies": pregnancies,
+    "smokes": smokes,
+    "smk_years": smk_years,
+    "smk_packs": smk_packs,
+    "hormonal": hormonal,
+    "horm_years": horm_years,
+    "iud": iud,
+    "iud_years": iud_years,
+    "stds": stds,
+    "stds_num": stds_num,
+    "hinselmann": hinselmann,
+    "schiller": schiller,
+    "citology": citology,
+    "dx_cancer": dx_cancer,
+    "dx_cin": dx_cin,
+    "dx_hpv": dx_hpv,
+    "dx_any": dx_any,
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -456,11 +497,11 @@ st.markdown("---")
 if metrics:
     cols = st.columns(5)
     kpis = [
-        ("AUC-ROC",   f"{metrics['auc']:.4f}",      "ideal = 1.0"),
-        ("F1-Score",  f"{metrics['f1']:.4f}",        "Precision × Recall"),
-        ("Recall",    f"{metrics['recall']:.4f}",    "key metric"),
+        ("AUC-ROC", f"{metrics['auc']:.4f}", "ideal = 1.0"),
+        ("F1-Score", f"{metrics['f1']:.4f}", "Precision × Recall"),
+        ("Recall", f"{metrics['recall']:.4f}", "key metric"),
         ("Precision", f"{metrics['precision']:.4f}", "TP / (TP+FP)"),
-        ("Accuracy",  f"{metrics['accuracy']:.4f}",  model_name[:18]),
+        ("Accuracy", f"{metrics['accuracy']:.4f}", model_name[:18]),
     ]
     for col, (lbl, val, sub) in zip(cols, kpis):
         col.markdown(f"""
@@ -478,7 +519,8 @@ def dark_fig(w=6, h=4):
     fig, ax = plt.subplots(figsize=(w, h), facecolor="#0d1117")
     ax.set_facecolor("#0d1117")
     ax.tick_params(colors="#8b949e")
-    for s in ax.spines.values(): s.set_edgecolor("#1e2530")
+    for s in ax.spines.values():
+        s.set_edgecolor("#1e2530")
     return fig, ax
 
 t1, t2, t3, t4, t5, t6 = st.tabs([
@@ -497,26 +539,33 @@ with t1:
             result = run_prediction(patient_dict)
 
         if result:
-            prob   = result["probability"]
-            level  = result["risk_level"]
+            prob = result["probability"]
+            level = result["risk_level"]
             source = result["source"]
-            pred   = int(prob >= 0.5)
+            pred = int(prob >= THRESHOLD)
 
-            # Risk factors
             factors = []
-            if age > 40:                    factors.append(("🔴", "Age > 40",              "pill-red"))
-            if smokes:                      factors.append(("🔴", f"Smoking {smk_years:.0f}y","pill-red"))
-            if stds:                        factors.append(("🔴", f"STDs ({stds_num})",     "pill-red"))
-            if first_sex < 16:              factors.append(("🟡", "1st intercourse < 16",   "pill-amber"))
-            if partners > 5:                factors.append(("🟡", f"{partners} partners",   "pill-amber"))
-            if pregnancies > 3:             factors.append(("🟡", f"{pregnancies} preg.",   "pill-amber"))
-            if hormonal and horm_years > 5: factors.append(("🟡", f"Contraceptives {horm_years:.0f}y","pill-amber"))
-            if not factors:                 factors.append(("🟢", "No major risk factors",  "pill-green"))
+            if age > 40:
+                factors.append(("🔴", "Age > 40", "pill-red"))
+            if smokes:
+                factors.append(("🔴", f"Smoking {smk_years:.0f}y", "pill-red"))
+            if stds:
+                factors.append(("🔴", f"STDs ({stds_num})", "pill-red"))
+            if first_sex < 16:
+                factors.append(("🟡", "1st intercourse < 16", "pill-amber"))
+            if partners > 5:
+                factors.append(("🟡", f"{partners} partners", "pill-amber"))
+            if pregnancies > 3:
+                factors.append(("🟡", f"{pregnancies} preg.", "pill-amber"))
+            if hormonal and horm_years > 5:
+                factors.append(("🟡", f"Contraceptives {horm_years:.0f}y", "pill-amber"))
+            if not factors:
+                factors.append(("🟢", "No major risk factors", "pill-green"))
 
             st.session_state.last_prediction = {
                 "probability": float(prob),
                 "risk_level": level,
-                "risk_factors": [l for _, l, _ in factors],
+                "risk_factors": [label for _, label, _ in factors],
             }
 
             ca, cb = st.columns([1, 1], gap="large")
@@ -542,7 +591,7 @@ with t1:
                 st.progress(min(float(prob), 1.0))
                 st.markdown(f"""
                 <p style='text-align:center;font-family:IBM Plex Mono,monospace;font-size:.73rem;color:#8b949e'>
-                    score={prob:.6f} · threshold=0.5 · source={source}
+                    score={prob:.6f} · threshold={THRESHOLD:.2f} · source={source}
                 </p>""", unsafe_allow_html=True)
 
                 st.markdown("""
@@ -556,10 +605,12 @@ with t1:
                 st.markdown(pills, unsafe_allow_html=True)
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.markdown("#### Patient summary")
-                # All string columns — mixed int/str breaks PyArrow when Streamlit serializes the dataframe
-                _sum = pd.DataFrame({
-                    "Parameter": ["Age", "Partners", "1st intercourse", "Pregnancies",
-                                  "Smoking", "Contraceptives", "IUD", "STDs"],
+
+                summary_df = pd.DataFrame({
+                    "Parameter": [
+                        "Age", "Partners", "1st intercourse", "Pregnancies",
+                        "Smoking", "Contraceptives", "IUD", "STDs"
+                    ],
                     "Value": [
                         str(int(age)),
                         str(int(partners)),
@@ -571,16 +622,18 @@ with t1:
                         f"Yes ({int(stds_num)})" if stds else "No",
                     ],
                 }).astype({"Parameter": "object", "Value": "object"})
-                st.dataframe(_sum, hide_index=True, width="stretch")
+
+                st.dataframe(summary_df, hide_index=True, width='stretch')
                 st.markdown(
                     "<p style='font-size:0.72rem;color:#8b949e;margin-top:8px'>"
-                    "The probability uses <b>all</b> pipeline inputs (sidebar, clinical expander, and default medians from the UCI CSV for columns not shown). "
-                    "Two profiles can both be HIGH risk with different %.</p>",
+                    "Prediction uses the saved final pipeline with the exact trained feature list and threshold. "
+                    "Clinical test toggles are kept in the UI for compatibility, but the corrected final model ignores them unless they are explicitly part of the saved pipeline."
+                    "</p>",
                     unsafe_allow_html=True,
                 )
                 st.markdown("""
                 <div class='box-danger'>
-                    Model calibrated to maximise <b>Recall</b> — minimising missed cancers (FN).
+                    Model is tuned to prioritize <b>Recall</b> — reducing missed cancers (false negatives).
                 </div>""", unsafe_allow_html=True)
 
             st.markdown("### 🔍 Why this prediction? (Explainable AI)")
@@ -589,15 +642,24 @@ with t1:
 
             if shap_values is not None and feature_names is not None:
                 try:
-                    fig_w, _ = plt.subplots()
+                    fig_w = plt.figure()
                     shap.plots.waterfall(shap_values[0], show=False)
-                    st.pyplot(fig_w, width="stretch")
+                    st.pyplot(fig_w, width='stretch')
                     plt.close(fig_w)
                 except Exception:
                     pass
 
                 st.markdown("#### 🔝 Top factors influencing prediction:")
-                values = shap_values.values[0]
+                values = np.asarray(shap_values.values[0])
+                if values.ndim == 2:
+                    # Binary classification SHAP returns one contribution per class.
+                    values = values[:, -1]
+                elif values.ndim > 1:
+                    values = values.flatten()
+
+                if feature_names is None:
+                    feature_names = list(input_df.columns)
+
                 impacts = sorted(
                     zip(feature_names, values),
                     key=lambda x: abs(x[1]),
@@ -608,6 +670,8 @@ with t1:
                         st.write(f"🔴 **{name}** increases risk (+{val:.4f})")
                     else:
                         st.write(f"🟢 **{name}** decreases risk ({val:.4f})")
+            else:
+                st.info("SHAP explanation not available for the current saved pipeline.")
     else:
         st.markdown("""
         <div style='text-align:center;padding:60px 0;color:#8b949e'>
@@ -619,13 +683,13 @@ with t1:
         </div>""", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────
-# TAB 2 — AI ASSISTANT (built-in, no external chatbot.py needed)
+# TAB 2 — AI ASSISTANT
 # ──────────────────────────────────────────────────────────────────
 with t2:
     st.markdown("<div class='section-header'>AI medical assistant</div>", unsafe_allow_html=True)
 
     if st.session_state.last_prediction:
-        p  = st.session_state.last_prediction
+        p = st.session_state.last_prediction
         bc = "#da3633" if p["risk_level"] == "HIGH" else "#238636"
         st.markdown(f"""
         <div style='background:#0d1117;border:1px solid {bc};border-radius:8px;
@@ -643,7 +707,6 @@ with t2:
             Run a prediction first (Tab 1) to give the assistant your result context.
         </div>""", unsafe_allow_html=True)
 
-    # Quick prompt buttons
     col_a, col_b, col_c = st.columns(3)
     if col_a.button("What does my result mean?"):
         st.session_state.chat_history.append({"role": "user", "content": "What does my result mean?"})
@@ -652,29 +715,27 @@ with t2:
     if col_c.button("What risk factors affect my score?"):
         st.session_state.chat_history.append({"role": "user", "content": "Which risk factors affect my score the most?"})
 
-    # Chat display
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
-    # Chat input
     if user_input := st.chat_input("Ask about your results, risk factors, or next steps..."):
         st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-        # Build context for the AI
         ctx = ""
         if st.session_state.last_prediction:
             p = st.session_state.last_prediction
-            ctx = (f"Patient assessed as {p['risk_level']} risk with probability "
-                   f"{p['probability']:.1%}. Key factors: {', '.join(p['risk_factors'])}. ")
+            ctx = (
+                f"Patient assessed as {p['risk_level']} risk with probability "
+                f"{p['probability']:.1%}. Key factors: {', '.join(p['risk_factors'])}. "
+            )
 
-        # Try Gemini first (free), fallback to rule-based
         GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
         reply = ""
 
         if GEMINI_KEY:
             try:
-                import google.generativeai as genai  # pyright: ignore[reportMissingImports]
+                genai = importlib.import_module("google.generativeai")
                 genai.configure(api_key=GEMINI_KEY)
                 model_ai = genai.GenerativeModel("gemini-1.5-flash")
                 system = (
@@ -685,47 +746,54 @@ with t2:
                 )
                 response = model_ai.generate_content(system + "\n\nUser: " + user_input)
                 reply = response.text
+            except ModuleNotFoundError:
+                reply = "[Gemini unavailable: google.generativeai package is not installed.] "
             except Exception as e:
                 reply = f"[Gemini error: {e}] "
 
         if not reply:
-            # Rule-based fallback — no API key needed
             u = user_input.lower()
             if any(w in u for w in ["high", "critical", "serious", "worried"]):
-                reply = ("A high-risk result means the model detected several significant risk factors. "
-                         "This is NOT a cancer diagnosis — it means you should see a gynaecologist soon (within a few weeks). "
-                         "They may recommend a Pap smear or colposcopy. Early detection makes a huge difference.")
+                reply = (
+                    "A high-risk result means the model detected several significant risk factors. "
+                    "This is NOT a cancer diagnosis — it means you should see a gynaecologist soon. "
+                    "They may recommend a Pap smear or colposcopy. Early detection matters."
+                )
             elif any(w in u for w in ["low", "safe", "good", "fine"]):
-                reply = ("A low-risk result is reassuring! Continue with routine annual Pap smear screenings. "
-                         "The main preventive steps are regular check-ups, HPV vaccination if eligible, "
-                         "and safe sexual practices.")
+                reply = (
+                    "A low-risk result is reassuring. Continue with routine screening and follow-up. "
+                    "Prevention still matters: regular check-ups, HPV vaccination if eligible, and safe sexual practices."
+                )
             elif any(w in u for w in ["mean", "result", "explain", "understand"]):
                 if st.session_state.last_prediction:
                     p = st.session_state.last_prediction
-                    reply = (f"Your result is {p['risk_level']} risk with a probability of {p['probability']:.1%}. "
-                             f"The model identified these factors: {', '.join(p['risk_factors'])}. "
-                             "The threshold is 50% — above that is high risk, below is low risk. "
-                             "Always confirm with a healthcare professional.")
+                    reply = (
+                        f"Your result is {p['risk_level']} risk with a probability of {p['probability']:.1%}. "
+                        f"The main factors highlighted were: {', '.join(p['risk_factors'])}. "
+                        f"The current threshold is {THRESHOLD:.2f}. Always confirm with a healthcare professional."
+                    )
                 else:
                     reply = "Please run a prediction first using the sidebar, then come back here to understand your result."
             elif any(w in u for w in ["next", "do", "step", "action", "recommend"]):
-                reply = ("Next steps depend on your risk level. For HIGH risk: contact your gynaecologist this week. "
-                         "For MEDIUM/LOW risk: schedule a routine Pap smear if you haven't had one recently. "
-                         "In all cases: quit smoking if applicable, practice safe sex, and consider HPV vaccination.")
+                reply = (
+                    "Next steps depend on your risk level. For HIGH risk: contact your gynaecologist soon. "
+                    "For LOW risk: continue routine screening. In all cases: avoid smoking, practice safe sex, and follow medical advice."
+                )
             elif any(w in u for w in ["hpv", "papilloma"]):
-                reply = ("HPV is the main cause of cervical cancer. Most infections clear naturally, "
-                         "but high-risk strains (HPV 16, 18) can cause cell changes over time. "
-                         "The HPV vaccine is highly effective and recommended for ages 9–26. "
-                         "Regular Pap smears catch early changes before they become cancer.")
+                reply = (
+                    "HPV is the main cause of cervical cancer. Most infections clear naturally, but some strains can cause persistent cell changes. "
+                    "Vaccination and routine screening are the main prevention tools."
+                )
             elif any(w in u for w in ["smok", "cigarette"]):
-                reply = ("Smoking is a major cervical cancer risk factor. It weakens your immune system's "
-                         "ability to fight HPV and introduces carcinogens directly to cervical cells. "
-                         "Quitting smoking at any age reduces your risk significantly.")
+                reply = (
+                    "Smoking increases cervical cancer risk because it weakens immune defense against HPV and exposes cells to carcinogens. "
+                    "Stopping smoking helps at any stage."
+                )
             else:
-                reply = ("I'm your cervical cancer risk assistant. I can explain your prediction result, "
-                         "discuss risk factors (HPV, smoking, STDs, contraceptives), or suggest next steps. "
-                         "Run a prediction first, then ask me anything about it! "
-                         "Remember: always consult a real doctor for medical decisions.")
+                reply = (
+                    "I can explain your prediction, discuss major risk factors, or suggest what to do next. "
+                    "Remember: this tool supports screening awareness, not diagnosis."
+                )
 
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
         st.rerun()
@@ -740,48 +808,58 @@ with t3:
     else:
         img = load_img("roc_pr_curves.png")
         if img:
-            st.image(img, width="stretch")
+            st.image(img, width='stretch')
         else:
             ca, cb = st.columns(2)
             with ca:
                 fig, ax = dark_fig(5, 4)
-                ax.plot(metrics['fpr'], metrics['tpr'], color='#58a6ff', lw=2.5,
-                        label=f"AUC={metrics['auc']:.3f}")
-                ax.plot([0, 1], [0, 1], '--', color='#30363d', lw=1)
-                ax.fill_between(metrics['fpr'], metrics['tpr'], alpha=.08, color='#58a6ff')
-                ax.set_xlabel("FPR", color="#8b949e"); ax.set_ylabel("TPR", color="#8b949e")
+                ax.plot(metrics["fpr"], metrics["tpr"], color="#58a6ff", lw=2.5, label=f"AUC={metrics['auc']:.3f}")
+                ax.plot([0, 1], [0, 1], "--", color="#30363d", lw=1)
+                ax.fill_between(metrics["fpr"], metrics["tpr"], alpha=.08, color="#58a6ff")
+                ax.set_xlabel("FPR", color="#8b949e")
+                ax.set_ylabel("TPR", color="#8b949e")
                 ax.set_title("ROC Curve", color="#e6edf3")
                 ax.legend(fontsize=9, facecolor="#0d1117", labelcolor="white")
-                st.pyplot(fig, width="stretch"); plt.close()
+                st.pyplot(fig, width='stretch')
+                plt.close()
             with cb:
                 fig, ax = dark_fig(5, 4)
-                ax.plot(metrics['rec_curve'], metrics['prec_curve'], color='#3fb950', lw=2.5,
-                        label=f"AP={metrics['ap']:.3f}")
-                ax.fill_between(metrics['rec_curve'], metrics['prec_curve'], alpha=.08, color='#3fb950')
-                ax.set_xlabel("Recall", color="#8b949e"); ax.set_ylabel("Precision", color="#8b949e")
+                ax.plot(metrics["rec_curve"], metrics["prec_curve"], color="#3fb950", lw=2.5, label=f"AP={metrics['ap']:.3f}")
+                ax.fill_between(metrics["rec_curve"], metrics["prec_curve"], alpha=.08, color="#3fb950")
+                ax.set_xlabel("Recall", color="#8b949e")
+                ax.set_ylabel("Precision", color="#8b949e")
                 ax.set_title("Precision-Recall", color="#e6edf3")
                 ax.legend(fontsize=9, facecolor="#0d1117", labelcolor="white")
-                st.pyplot(fig, width="stretch"); plt.close()
+                st.pyplot(fig, width='stretch')
+                plt.close()
 
         cm_img = load_img("confusion_matrices.png")
         if cm_img:
             st.markdown("<div class='section-header'>Confusion matrices</div>", unsafe_allow_html=True)
-            st.image(cm_img, width="stretch")
+            st.image(cm_img, width='stretch')
         else:
             ca, cb = st.columns([1, 1])
             with ca:
                 fig, ax = dark_fig(4.5, 3.5)
-                sns.heatmap(metrics['cm'], annot=True, fmt='d', cmap='Blues', ax=ax,
-                            xticklabels=['No Cancer', 'Cancer'],
-                            yticklabels=['No Cancer', 'Cancer'],
-                            linewidths=1, linecolor="#0d1117",
-                            annot_kws={'size': 14, 'weight': 'bold', 'color': 'white'})
+                sns.heatmap(
+                    metrics["cm"],
+                    annot=True,
+                    fmt="d",
+                    cmap="Blues",
+                    ax=ax,
+                    xticklabels=["No Cancer", "Cancer"],
+                    yticklabels=["No Cancer", "Cancer"],
+                    linewidths=1,
+                    linecolor="#0d1117",
+                    annot_kws={"size": 14, "weight": "bold", "color": "white"},
+                )
                 ax.set_xlabel("Predicted", color="#8b949e")
                 ax.set_ylabel("Actual", color="#8b949e")
                 ax.set_title(f"Confusion — {model_name}", color="#e6edf3", fontsize=10)
-                st.pyplot(fig, width="stretch"); plt.close()
+                st.pyplot(fig, width='stretch')
+                plt.close()
             with cb:
-                tn, fp, fn, tp = metrics['tn'], metrics['fp'], metrics['fn'], metrics['tp']
+                tn, fp, fn, tp = metrics["tn"], metrics["fp"], metrics["fn"], metrics["tp"]
                 st.markdown(f"""
                 <div class='box-info'>
                     <b>Error analysis</b><br><br>
@@ -796,12 +874,14 @@ with t3:
         st.markdown("<div class='section-header'>Performance table</div>", unsafe_allow_html=True)
         st.dataframe(pd.DataFrame([{
             "Model": model_name,
-            "AUC-ROC": round(metrics['auc'], 4),
-            "F1": round(metrics['f1'], 4),
-            "Recall": round(metrics['recall'], 4),
-            "Precision": round(metrics['precision'], 4),
-            "Accuracy": round(metrics['accuracy'], 4),
-        }]), hide_index=True, width="stretch")
+            "AUC-ROC": round(metrics["auc"], 4),
+            "PR-AUC": round(metrics["ap"], 4),
+            "F1": round(metrics["f1"], 4),
+            "Recall": round(metrics["recall"], 4),
+            "Precision": round(metrics["precision"], 4),
+            "Balanced Accuracy": round(metrics["balanced_accuracy"], 4),
+            "Accuracy": round(metrics["accuracy"], 4),
+        }]), hide_index=True, width='stretch')
 
 # ──────────────────────────────────────────────────────────────────
 # TAB 4 — SHAP
@@ -810,8 +890,8 @@ with t4:
     st.markdown("<div class='section-header'>Explainability — SHAP values</div>", unsafe_allow_html=True)
     shap_files = {
         "Feature Importance — global impact": "shap_importance.png",
-        "Beeswarm — impact direction":        "shap_beeswarm.png",
-        "Waterfall Plot":                     "shap_waterfall.png",
+        "Beeswarm — impact direction": "shap_beeswarm.png",
+        "Waterfall Plot": "shap_waterfall.png",
     }
     found = False
     for title, fname in shap_files.items():
@@ -819,9 +899,9 @@ with t4:
         if img:
             found = True
             st.markdown(f"#### {title}")
-            st.image(img, width="stretch")
+            st.image(img, width='stretch')
     if not found:
-        st.warning("Run the training notebook to generate SHAP charts in outputs/.")
+        st.warning("Run the training/final notebook to generate SHAP charts in outputs/.")
 
 # ──────────────────────────────────────────────────────────────────
 # TAB 5 — EDA
@@ -829,51 +909,70 @@ with t4:
 with t5:
     st.markdown("<div class='section-header'>Exploratory data analysis</div>", unsafe_allow_html=True)
     eda_imgs = {
-        "Target distribution":   "target_distribution.png",
+        "Target distribution": "target_distribution.png",
         "Feature distributions": "feature_distributions.png",
-        "Missing values":        "missing_values.png",
-        "Correlation matrix":    "correlation_matrix.png",
-        "Boxplots":              "boxplots.png",
+        "Missing values": "missing_values.png",
+        "Correlation matrix": "correlation_matrix.png",
+        "Boxplots": "boxplots.png",
     }
+
     ecols = st.columns(2)
-    ei = 0; found_eda = False
+    ei = 0
+    found_eda = False
     for title, fname in eda_imgs.items():
         img = load_img(fname)
         if img:
             found_eda = True
             with ecols[ei % 2]:
                 st.markdown(f"#### {title}")
-                st.image(img, width="stretch")
+                st.image(img, width='stretch')
             ei += 1
 
-    if not found_eda and df_raw is not None:
+    if not found_eda and df_raw is not None and "Biopsy" in df_raw.columns:
         ea, eb = st.columns(2)
         with ea:
             fig, ax = dark_fig(5, 4)
-            counts = df_raw['Biopsy'].value_counts()
-            ax.pie(counts, labels=['No Cancer', 'Cancer'],
-                   colors=['#58a6ff', '#da3633'], autopct='%1.1f%%',
-                   wedgeprops={'edgecolor': '#0d1117', 'linewidth': 2},
-                   textprops={'color': 'white', 'fontsize': 10})
+            counts = df_raw["Biopsy"].value_counts()
+            labels = [f"Class {int(x)}" for x in counts.index.tolist()]
+            ax.pie(
+                counts,
+                labels=labels,
+                colors=["#58a6ff", "#da3633"][:len(counts)],
+                autopct="%1.1f%%",
+                wedgeprops={"edgecolor": "#0d1117", "linewidth": 2},
+                textprops={"color": "white", "fontsize": 10},
+            )
             ax.set_title("Class balance", color="#e6edf3")
-            st.pyplot(fig, width="stretch"); plt.close()
+            st.pyplot(fig, width='stretch')
+            plt.close()
         with eb:
-            fig, ax = dark_fig(5, 4)
-            for val, c, lbl in [(0, '#58a6ff', 'No Cancer'), (1, '#da3633', 'Cancer')]:
-                df_raw[df_raw['Biopsy'] == val]['Age'].dropna().hist(
-                    bins=20, ax=ax, alpha=.7, color=c, label=lbl)
-            ax.set_xlabel("Age", color="#8b949e")
-            ax.set_ylabel("Count", color="#8b949e")
-            ax.set_title("Age distribution", color="#e6edf3")
-            ax.legend(facecolor="#0d1117", labelcolor="white")
-            st.pyplot(fig, width="stretch"); plt.close()
+            if "Age" in df_raw.columns:
+                fig, ax = dark_fig(5, 4)
+                for val, c in [(0, "#58a6ff"), (1, "#da3633")]:
+                    subset = df_raw[df_raw["Biopsy"] == val]
+                    if not subset.empty:
+                        subset["Age"].dropna().hist(
+                            bins=20, ax=ax, alpha=.7, color=c, label=f"Class {val}"
+                        )
+                ax.set_xlabel("Age", color="#8b949e")
+                ax.set_ylabel("Count", color="#8b949e")
+                ax.set_title("Age distribution", color="#e6edf3")
+                ax.legend(facecolor="#0d1117", labelcolor="white")
+                st.pyplot(fig, width='stretch')
+                plt.close()
 
     if df_raw is not None:
         st.markdown("<div class='section-header'>Descriptive statistics</div>", unsafe_allow_html=True)
-        nc = [c for c in ['Age', 'Number of sexual partners',
-                           'First sexual intercourse', 'Num of pregnancies']
-              if c in df_raw.columns]
-        st.dataframe(df_raw[nc].describe().round(2).T, width="stretch")
+        nc = [
+            c for c in [
+                "Age",
+                "Number of sexual partners",
+                "First sexual intercourse",
+                "Num of pregnancies"
+            ] if c in df_raw.columns
+        ]
+        if nc:
+            st.dataframe(df_raw[nc].describe().round(2).T, width='stretch')
 
 # ──────────────────────────────────────────────────────────────────
 # TAB 6 — ABOUT
@@ -881,35 +980,60 @@ with t5:
 with t6:
     st.markdown("<div class='section-header'>About this project</div>", unsafe_allow_html=True)
     pa, pb = st.columns([1, 1], gap="large")
+
     with pa:
-        st.markdown("""
+        if df_raw is not None:
+            n_rows, n_cols = df_raw.shape
+            if "Biopsy" in df_raw.columns:
+                positive_rate = float((df_raw["Biopsy"] == 1).mean())
+                positive_txt = f"{positive_rate:.1%}"
+            else:
+                positive_txt = "N/A"
+        else:
+            n_rows, n_cols = "N/A", "N/A"
+            positive_txt = "N/A"
+
+        data_name = DATA_P.name if DATA_P is not None else "No dataset found"
+
+        st.markdown(f"""
         <div class='box-info'><b>Author</b><br>Hadil Dhaya · 4th Year Data Science · Group 5 · 2026</div>
         <div class='box-info'>
             <b>Dataset</b><br>
-            UCI Cervical Cancer Risk Factors<br>
-            858 patients · 36 features · Target: Biopsy<br>
-            <a href='https://archive.ics.uci.edu/dataset/383' style='color:#58a6ff'>UCI ML Repository</a>
+            {data_name}<br>
+            {n_rows} rows · {n_cols} columns · Target: Biopsy<br>
+            Positive class rate: {positive_txt}
         </div>
         <div class='box-info'>
             <b>Architecture</b><br>
             Streamlit → final_pipeline.pkl (sklearn Pipeline)<br>
-            Imputer + Scaler + Model in one object
+            Preprocessing + model loaded from one artifact
         </div>""", unsafe_allow_html=True)
+
     with pb:
-        if PIPELINE_FEATURES:
+        if FINAL_FEATURES:
+            feature_html = "<br>".join(FINAL_FEATURES[:20])
+            ellipsis = "<br>..." if len(FINAL_FEATURES) > 20 else ""
             st.markdown(f"""
             <div class='box-info'>
-                <b>Pipeline features ({len(PIPELINE_FEATURES)})</b><br><br>
-                {"<br>".join(PIPELINE_FEATURES[:20])}
-                {"<br>..." if len(PIPELINE_FEATURES) > 20 else ""}
+                <b>Pipeline features ({len(FINAL_FEATURES)})</b><br><br>
+                {feature_html}
+                {ellipsis}
+            </div>""", unsafe_allow_html=True)
+
+        if REMOVED_LEAKY_FEATURES:
+            removed_html = "<br>".join(sorted(REMOVED_LEAKY_FEATURES))
+            st.markdown(f"""
+            <div class='box-warn'>
+                <b>Excluded leaky / proxy features</b><br><br>
+                {removed_html}
             </div>""", unsafe_allow_html=True)
 
     st.markdown("<div class='section-header'>Methodological choices</div>", unsafe_allow_html=True)
     for q, a in [
-        ("Why KNN Imputer?", "Preserves feature correlations in medical data."),
-        ("Why SMOTE?", "Generates synthetic minority examples (~6% cancer). Better Recall than class_weight alone."),
-        ("Why Recall > Accuracy?", "Missing a real cancer (false negative) is catastrophic."),
-        ("Why sklearn Pipeline?", "Chains imputer + scaler + model into one object. Prevents data leakage and simplifies deployment."),
+        ("Why a single saved pipeline?", "It keeps preprocessing and model together, reduces leakage risk, and makes deployment safer."),
+        ("Why raw feature alignment matters?", "The app sends the exact trained feature names and order, avoiding silent inference mismatches."),
+        ("Why Recall matters more than Accuracy?", "Missing a true cancer case is usually more serious than a false alarm."),
+        ("Why ignore clinical proxy fields in the corrected model?", "They can leak near-diagnostic information and make performance look better than reality."),
     ]:
         with st.expander(f"? {q}"):
             st.markdown(f"<div class='box-info'>{a}</div>", unsafe_allow_html=True)
@@ -920,8 +1044,5 @@ with t6:
 st.markdown("---")
 st.markdown("""
 <p style='text-align:center;color:#30363d;font-size:.76rem;font-family:IBM Plex Mono,monospace'>
-    Cervical Cancer Risk Predictor · Hadil Dhaya · 2026 ·
-    <a href='https://archive.ics.uci.edu/dataset/383' style='color:#30363d'>UCI ML Repository</a>
-    · Academic use only
+    Cervical Cancer Risk Predictor · Hadil Dhaya · 2026 · Academic use only
 </p>""", unsafe_allow_html=True)
-# Streamlit ML App - improved version

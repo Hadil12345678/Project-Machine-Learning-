@@ -1,0 +1,21 @@
+{
+  "target": "Biopsy",
+  "final_raw_features": [
+    "Age",
+    "Number of sexual partners",
+    "First sexual intercourse",
+    "Num of pregnancies",
+    "Smokes",
+    "Smokes (years)",
+    "Smokes (packs/year)",
+    "Hormonal Contraceptives",
+    "Hormonal Contraceptives (years)"
+  ],
+  "best_model_name": "K-Nearest Neighbors",
+  "ranking_metric": [
+    "PR-AUC",
+    "Recall",
+    "AUC-ROC"
+  ],
+  "dataset_used": "Mydata.csv"
+}
