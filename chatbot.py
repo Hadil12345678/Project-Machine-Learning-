@@ -18,7 +18,7 @@ SETUP:
 
 import os
 import streamlit as st
-import anthropic
+import importlib
 from typing import Optional
 
 # ── Load API key ──────────────────────────────────────────────────
@@ -267,6 +267,7 @@ def render_chatbot(prediction_context: Optional[dict] = None):
 # ── Claude API call ───────────────────────────────────────────────
 def _call_claude(messages: list, system_prompt: str, api_key: str) -> Optional[str]:
     try:
+        anthropic = importlib.import_module("anthropic")
         client = anthropic.Anthropic(api_key=api_key)
 
         # Convert history to Claude format (max last 10 messages to save tokens)
@@ -285,9 +286,9 @@ def _call_claude(messages: list, system_prompt: str, api_key: str) -> Optional[s
         )
         return response.content[0].text
 
-    except anthropic.AuthenticationError:
-        return "Authentication failed. Please check your ANTHROPIC_API_KEY."
-    except anthropic.RateLimitError:
-        return "Rate limit reached. Please wait a moment and try again."
+    except ModuleNotFoundError:
+        return "Anthropic package not installed. Please run: pip install anthropic"
     except Exception as e:
+        if "anthropic" in str(e):
+            return "Anthropic package not installed or API key issue."
         return f"Error: {str(e)}"
